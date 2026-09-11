@@ -4,6 +4,7 @@ import StarterKit from '@tiptap/starter-kit';
 import Collaboration from '@tiptap/extension-collaboration';
 import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
+import { WebsocketProvider } from 'y-websocket';
 
 interface EditorProps {
     documentId: string;
@@ -12,22 +13,43 @@ interface EditorProps {
 export const Editor: React.FC<EditorProps> = ({documentId}) => {
     // Create CRDT document (state stable over renders)
     const [ydoc] = useState<Y.Doc>(() => new Y.Doc());
-    const [isSynced, setIsSynced] = useState<boolean>(false);
+    const [isLocalSynced, setIsLocalSynced] = useState<boolean>(false);
+    const [isRemoteSynced, setIsRemoteSynced] = useState<boolean>(false);
+    const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+    const websocketUrl = (import.meta as ImportMeta & {
+        env?: {
+            VITE_YJS_WS_URL?: string;
+        };
+    }).env?.VITE_YJS_WS_URL ?? 'ws://localhost:1234';
 
-    // Initialize local persistence via IndexedDB
+    // Initialize local persistence and remote sync providers
     useEffect(() => {
         const indexeddbProvider = new IndexeddbPersistence(documentId, ydoc);
+        const websocketProvider = new WebsocketProvider(
+            websocketUrl,
+            documentId,
+            ydoc,
+        );
 
         // Event firing when document progress from db is loaded in ydoc
         indexeddbProvider.on('synced', () => {
-            setIsSynced(true);
+            setIsLocalSynced(true);
+        });
+
+        websocketProvider.on('status', (event) => {
+            setConnectionStatus(event.status);
+        });
+
+        websocketProvider.on('sync', (isSynced) => {
+            setIsRemoteSynced(isSynced);
         });
 
         return () => {
+            websocketProvider.destroy();
             indexeddbProvider.destroy();
             ydoc.destroy();
         };
-    }, [documentId, ydoc]);
+    }, [documentId, websocketUrl, ydoc]);
 
     // Configure Tiptap with Yjs-collaboration extension
     const editor = useEditor({
@@ -53,11 +75,15 @@ export const Editor: React.FC<EditorProps> = ({documentId}) => {
                         width: '10px',
                         height: '10px',
                         borderRadius: '50%',
-                        backgroundColor: isSynced ? '#22c55e' : '#eab308',
+                        backgroundColor: isLocalSynced && isRemoteSynced ? '#22c55e' : '#eab308',
                     }}
                 />
                 <small>
-                    {isSynced ? 'IndexedDB synchronizing (offline ready)' : 'Loading from IndexedDB...  '}
+                    {isLocalSynced
+                        ? isRemoteSynced
+                            ? `Synced with ${connectionStatus === 'connected' ? 'server' : 'room'}`
+                            : `Local ready, ${connectionStatus} to server`
+                        : 'Loading from IndexedDB...'}
                 </small>
             </div>
 
